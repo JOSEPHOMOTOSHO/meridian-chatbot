@@ -38,9 +38,7 @@ atexit.register(_shutdown)
 
 
 def unwrap_content(content) -> str:
-    """The Responses API returns text as a plain str, a list of
-    {"text": ..., "type": "text"} blocks, or objects with .text.
-    This normalises all three into a plain string."""
+    
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -59,9 +57,7 @@ def unwrap_content(content) -> str:
 
 
 async def respond(message: str, history: list[dict], agent_state: list):
-    """Uses agent_state (full conversation with tool calls) instead of
-    text-only history so the agent retains tool results like customer_id
-    across turns."""
+
     try:
         current_agent = await get_agent()
     except ConnectionError:
