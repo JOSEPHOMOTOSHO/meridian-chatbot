@@ -58,47 +58,44 @@ def unwrap_content(content) -> str:
     return str(content)
 
 
-def history_to_messages(history: list[dict], user_msg: str) -> list[dict]:
-    messages = []
-    for entry in history:
-        role = entry.get("role")
-        text = entry.get("content")
-        if role in ("user", "assistant") and text:
-            messages.append({"role": role, "content": unwrap_content(text)})
-    messages.append({"role": "user", "content": user_msg})
-    return messages
-
-
-async def respond(message: str, history: list[dict]):
+async def respond(message: str, history: list[dict], agent_state: list):
+    """Uses agent_state (full conversation with tool calls) instead of
+    text-only history so the agent retains tool results like customer_id
+    across turns."""
     try:
         current_agent = await get_agent()
     except ConnectionError:
         logger.exception("MCP connection failed")
-        yield "I'm having trouble connecting to our systems right now. Please try again in a moment."
+        yield "I'm having trouble connecting to our systems right now. Please try again in a moment.", agent_state
         return
 
-    input_messages = history_to_messages(history, message)
+    agent_input = agent_state + [{"role": "user", "content": message}]
 
     try:
-        streamed_run = Runner.run_streamed(current_agent, input=input_messages)
+        streamed_run = Runner.run_streamed(current_agent, input=agent_input)
 
         accumulated_text = ""
         async for event in streamed_run.stream_events():
             if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
                 if event.data.delta:
                     accumulated_text += event.data.delta
-                    yield accumulated_text
+                    yield accumulated_text, gr.skip()
 
         completed_text = unwrap_content(streamed_run.final_output) if streamed_run.final_output else ""
 
+        # Carry forward the full conversation state including tool call results
+        updated_state = streamed_run.to_input_list()
+
         if not completed_text and not accumulated_text:
-            yield "I'm sorry, I wasn't able to process that. Could you try rephrasing?"
+            yield "I'm sorry, I wasn't able to process that. Could you try rephrasing?", updated_state
         elif completed_text and completed_text != accumulated_text:
-            yield completed_text
+            yield completed_text, updated_state
+        else:
+            yield accumulated_text, updated_state
 
     except Exception:
         logger.exception("Agent run failed for message: %s", message[:100])
-        yield "Something went wrong while handling your request. Please try again."
+        yield "Something went wrong while handling your request. Please try again.", agent_state
 
 
 css = """
@@ -116,6 +113,8 @@ with gr.Blocks() as app:
         </div>
     """)
 
+    agent_state = gr.State([])
+
     gr.ChatInterface(
         fn=respond,
         chatbot=gr.Chatbot(
@@ -127,12 +126,14 @@ with gr.Blocks() as app:
             container=False,
             scale=7,
         ),
+        additional_inputs=[agent_state],
+        additional_outputs=[agent_state],
         examples=[
-            "What products do you have?",
-            "Show me your monitors",
-            "I'd like to check my order history",
-            "Help me find a keyboard",
-            "I want to place an order",
+            ["What products do you have?"],
+            ["Show me your monitors"],
+            ["I'd like to check my order history"],
+            ["Help me find a keyboard"],
+            ["I want to place an order"],
         ],
         cache_examples=False,
     )
